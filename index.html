@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Intercambio Familiar 🎁</title>
+
+  <!-- Tailwind CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Firebase (Compat CDN) -->
+  <script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-database-compat.js"></script>
+
+  <style>
+    /* WhatsApp / WebView safe 100vh */
+    .min-h-safe {
+      min-height: calc(var(--vh, 1vh) * 100);
+    }
+    /* Evita “selección” accidental */
+    .no-select { user-select: none; -webkit-user-select: none; }
+  </style>
+</head>
+
+<body class="bg-slate-950 text-slate-100 min-h-safe">
+  <div class="max-w-3xl mx-auto px-4 pt-8 pb-28">
+    <header class="mb-6">
+      <h1 class="text-3xl font-extrabold tracking-tight">🎄 Intercambio Familiar</h1>
+      <p class="text-slate-300 mt-2 text-base">
+        Elige tu nombre y sortea. Sin registro, sin “eventos”, sin llorar.
+      </p>
+    </header>
+
+    <!-- NORMAL VIEW -->
+    <section id="normalView" class="bg-slate-900/60 rounded-2xl shadow p-6 border border-slate-800">
+      <div class="grid gap-4">
+        <div>
+          <label class="block text-sm text-slate-300 mb-2">Tu nombre</label>
+          <select id="giverSelect"
+                  class="w-full text-lg bg-slate-950 border border-slate-700 rounded-xl px-4 py-4 text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <option value="">Cargando...</option>
+          </select>
+          <p id="pendingHint" class="text-xs text-slate-400 mt-2"></p>
+        </div>
+
+        <div id="statusBox" class="hidden rounded-xl border p-4">
+          <p id="statusText" class="text-slate-200 text-base"></p>
+        </div>
+
+        <div id="resultBox"
+             class="hidden rounded-2xl border border-emerald-700/40 bg-emerald-950/30 p-6 overflow-hidden">
+          <p class="text-base text-emerald-200">🎁 Te toca regalarle a:</p>
+          <div id="resultName"
+               class="mt-2 text-4xl sm:text-5xl font-extrabold tracking-tight text-emerald-100 opacity-0 translate-y-4 no-select">
+          </div>
+          <p class="mt-4 text-sm text-emerald-200/80">
+            Tip: haz screenshot y no lo digas en el grupo 😄
+          </p>
+        </div>
+
+        <div class="text-xs text-slate-400">
+          <span class="font-semibold">Nota:</span> si tu nombre ya no aparece, ya sorteaste.
+        </div>
+      </div>
+    </section>
+
+    <!-- ADMIN VIEW -->
+    <section id="adminView" class="hidden mt-8 bg-slate-900/60 rounded-2xl shadow p-6 border border-slate-800">
+      <div class="flex items-center justify-between gap-4 flex-wrap">
+        <h2 class="text-xl font-bold">👀 Panel Admin</h2>
+        <div class="text-xs text-slate-400">
+          Se activa con <code class="bg-slate-950 px-2 py-1 rounded border border-slate-800">?view=admin</code>
+        </div>
+      </div>
+
+      <div class="mt-4 overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead>
+            <tr class="text-left text-slate-300 border-b border-slate-800">
+              <th class="py-3 pr-4">Quien regala</th>
+              <th class="py-3 pr-4">A quien le toca</th>
+              <th class="py-3 pr-4">Timestamp</th>
+            </tr>
+          </thead>
+          <tbody id="adminTableBody" class="divide-y divide-slate-800"></tbody>
+        </table>
+      </div>
+
+      <div class="mt-4 text-xs text-slate-400">
+        Consejo: cuando termine el evento, cambia reglas para bloquear escritura.
+      </div>
+    </section>
+
+    <footer class="mt-10 text-xs text-slate-500">
+      Hecho para WhatsApp WebView. Si falla, es culpa del tío… y un poquito de Meta.
+    </footer>
+  </div>
+
+  <!-- Sticky CTA (siempre visible) -->
+  <div class="fixed left-0 right-0 bottom-0 bg-slate-950/95 backdrop-blur border-t border-slate-800">
+    <div class="max-w-3xl mx-auto px-4 py-3">
+      <button id="drawBtn"
+              class="w-full rounded-xl bg-indigo-600 hover:bg-indigo-500 transition px-4 py-4 text-lg font-extrabold disabled:opacity-50 disabled:cursor-not-allowed">
+        Sortear mi Amigo Secreto
+      </button>
+      <p class="mt-2 text-xs text-slate-400">
+        Si no ves tu nombre en la lista, ya está sorteado.
+      </p>
+    </div>
+  </div>
+
+  <script>
+    // =========================
+    //  WhatsApp/WebView: Safe VH
+    // =========================
+    function setSafeVH() {
+      const vh = window.innerHeight * 0.01;
+      document.documentElement.style.setProperty('--vh', `${vh}px`);
+    }
+    setSafeVH();
+    window.addEventListener('resize', setSafeVH);
+
+    // =========================
+    //  CONFIG
+    // =========================
+    const firebaseConfig = {
+      apiKey: "REEMPLAZA",
+      authDomain: "REEMPLAZA",
+      databaseURL: "REEMPLAZA", // <- RTDB URL
+      projectId: "REEMPLAZA",
+      appId: "REEMPLAZA",
+    };
+
+    const EVENT_ID = "familia-2025";
+
+    // =========================
+    //  INIT
+    // =========================
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    const isAdminView = new URLSearchParams(location.search).get("view") === "admin";
+
+    const normalView = document.getElementById("normalView");
+    const adminView = document.getElementById("adminView");
+
+    const giverSelect = document.getElementById("giverSelect");
+    const drawBtn = document.getElementById("drawBtn");
+
+    const statusBox = document.getElementById("statusBox");
+    const statusText = document.getElementById("statusText");
+
+    const resultBox = document.getElementById("resultBox");
+    const resultNameEl = document.getElementById("resultName");
+    const pendingHint = document.getElementById("pendingHint");
+
+    const adminTableBody = document.getElementById("adminTableBody");
+
+    const stateRef = db.ref(`events/${EVENT_ID}/state`);
+
+    if (isAdminView) {
+      normalView.classList.add("hidden");
+      adminView.classList.remove("hidden");
+      mountAdmin();
+    } else {
+      mountNormal();
+    }
+
+    // =========================
+    //  UI HELPERS
+    // =========================
+    function setStatus(msg, kind = "info") {
+      statusBox.classList.remove("hidden");
+      statusText.textContent = msg;
+
+      statusBox.classList.remove(
+        "border-rose-700/50","bg-rose-950/30",
+        "border-emerald-700/40","bg-emerald-950/30",
+        "border-slate-700","bg-slate-950"
+      );
+
+      if (kind === "error") statusBox.classList.add("border-rose-700/50","bg-rose-950/30");
+      else if (kind === "success") statusBox.classList.add("border-emerald-700/40","bg-emerald-950/30");
+      else statusBox.classList.add("border-slate-700","bg-slate-950");
+    }
+
+    function clearStatus() {
+      statusBox.classList.add("hidden");
+      statusText.textContent = "";
+    }
+
+    function showResult(receiverName) {
+      resultBox.classList.remove("hidden");
+      resultNameEl.textContent = receiverName;
+
+      // Animación simple y confiable en WebView
+      requestAnimationFrame(() => {
+        resultNameEl.style.transition = "all 450ms ease";
+        resultNameEl.classList.remove("opacity-0", "translate-y-4");
+        resultNameEl.classList.add("opacity-100", "translate-y-0");
+      });
+    }
+
+    function resetResult() {
+      resultBox.classList.add("hidden");
+      resultNameEl.textContent = "";
+      resultNameEl.style.transition = "";
+      resultNameEl.classList.add("opacity-0", "translate-y-4");
+      resultNameEl.classList.remove("opacity-100", "translate-y-0");
+    }
+
+    function setLoading(isLoading) {
+      drawBtn.disabled = isLoading || !giverSelect.value;
+      drawBtn.textContent = isLoading ? "Sorteando..." : "Sortear mi Amigo Secreto";
+      giverSelect.disabled = isLoading;
+    }
+
+    // =========================
+    //  NORMAL VIEW
+    // =========================
+    function mountNormal() {
+      resetResult();
+      clearStatus();
+      setLoading(true);
+
+      // Render dropdown en tiempo real desde pendingGivers
+      stateRef.on("value", (snap) => {
+        const state = snap.val();
+        const pending = (state && Array.isArray(state.pendingGivers)) ? state.pendingGivers : [];
+        const assignedCount = state && state.assignments ? Object.keys(state.assignments).length : 0;
+
+        const prev = giverSelect.value;
+
+        giverSelect.innerHTML = "";
+        const opt0 = document.createElement("option");
+        opt0.value = "";
+        opt0.textContent = pending.length ? "Selecciona tu nombre..." : "No quedan participantes pendientes";
+        giverSelect.appendChild(opt0);
+
+        pending.forEach((name) => {
+          const opt = document.createElement("option");
+          opt.value = name;
+          opt.textContent = name;
+          giverSelect.appendChild(opt);
+        });
+
+        if (pending.includes(prev)) giverSelect.value = prev;
+
+        pendingHint.textContent = `Pendientes: ${pending.length} • Emparejamientos: ${assignedCount}`;
+
+        setLoading(false);
+      }, (err) => {
+        setStatus("❌ Error leyendo Firebase: " + err.message, "error");
+        setLoading(false);
+      });
+
+      giverSelect.addEventListener("change", () => {
+        resetResult();
+        clearStatus();
+        setLoading(false);
+      });
+
+      drawBtn.addEventListener("click", async () => {
+        resetResult();
+        clearStatus();
+
+        const giver = giverSelect.value?.trim();
+        if (!giver) {
+          setStatus("⚠️ Selecciona tu nombre primero.", "error");
+          return;
+        }
+
+        setLoading(true);
+        setStatus("⏳ Sorteando… espera un momento", "info");
+
+        try {
+          const result = await drawSecretSantaAtomic(giver);
+          showResult(result.receiver);
+          setStatus("✅ Listo. Ya quedó registrado.", "success");
+        } catch (e) {
+          setStatus("❌ " + (e.message || "Ocurrió un error al sortear."), "error");
+        } finally {
+          setLoading(false);
+        }
+      });
+
+      setLoading(false);
+    }
+
+    /**
+     * Sorteo atómico con transacción
+     * state:
+     * {
+     *   pendingGivers: [],
+     *   availableReceivers: [],
+     *   assignments: { giver: { receiver, ts } }
+     * }
+     */
+    function drawSecretSantaAtomic(giver) {
+      return new Promise((resolve, reject) => {
+        stateRef.transaction((state) => {
+          if (!state) return; // abort: no creamos estado aquí
+
+          state.pendingGivers = Array.isArray(state.pendingGivers) ? state.pendingGivers : [];
+          state.availableReceivers = Array.isArray(state.availableReceivers) ? state.availableReceivers : [];
+          state.assignments = state.assignments || {};
+
+          // Ya sorteó
+          if (state.assignments[giver]) return;
+
+          // Debe estar pendiente
+          if (!state.pendingGivers.includes(giver)) return;
+
+          // Candidatos: receivers disponibles menos él mismo
+          const candidates = state.availableReceivers.filter(n => n !== giver);
+          if (candidates.length === 0) return;
+
+          const receiver = candidates[Math.floor(Math.random() * candidates.length)];
+
+          // Remover giver de pendientes
+          state.pendingGivers = state.pendingGivers.filter(n => n !== giver);
+
+          // Remover receiver de disponibles
+          state.availableReceivers = state.availableReceivers.filter(n => n !== receiver);
+
+          // Guardar asignación
+          state.assignments[giver] = { receiver, ts: Date.now() };
+
+          return state;
+        }, (error, committed, snapshot) => {
+          if (error) {
+            reject(new Error("Transacción falló: " + error.message));
+            return;
+          }
+          if (!committed) {
+            // Diagnóstico simple para UX
+            stateRef.once("value").then(snap => {
+              const state = snap.val() || {};
+              const assignments = state.assignments || {};
+              if (assignments[giver]) reject(new Error("Ya habías sorteado anteriormente."));
+              else if (Array.isArray(state.pendingGivers) && !state.pendingGivers.includes(giver))
+                reject(new Error("Tu nombre ya no está disponible (probablemente ya se usó)."));
+              else reject(new Error("No hay candidatos disponibles (caso límite)."));
+            }).catch(() => reject(new Error("No se pudo validar el estado actual.")));
+            return;
+          }
+
+          const newState = snapshot.val();
+          const assignment = newState?.assignments?.[giver];
+          if (!assignment?.receiver) {
+            reject(new Error("Se confirmó la transacción, pero no se encontró el resultado."));
+            return;
+          }
+          resolve({ giver, receiver: assignment.receiver, ts: assignment.ts });
+        }, false);
+      });
+    }
+
+    // =========================
+    //  ADMIN VIEW
+    // =========================
+    function mountAdmin() {
+      stateRef.on("value", (snap) => {
+        const state = snap.val() || {};
+        const assignments = state.assignments || {};
+
+        const rows = Object.entries(assignments)
+          .map(([giver, v]) => ({ giver, receiver: v.receiver, ts: v.ts }))
+          .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+
+        adminTableBody.innerHTML = "";
+
+        if (!rows.length) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td class="py-4 text-slate-400" colspan="3">Aún no hay emparejamientos.</td>`;
+          adminTableBody.appendChild(tr);
+          return;
+        }
+
+        for (const r of rows) {
+          const tr = document.createElement("tr");
+          const date = r.ts ? new Date(r.ts).toLocaleString("es-MX") : "-";
+          tr.innerHTML = `
+            <td class="py-3 pr-4 font-semibold text-slate-100">${escapeHtml(r.giver)}</td>
+            <td class="py-3 pr-4 text-slate-200">${escapeHtml(r.receiver || "-")}</td>
+            <td class="py-3 pr-4 text-slate-400">${escapeHtml(date)}</td>
+          `;
+          adminTableBody.appendChild(tr);
+        }
+      });
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+  </script>
+</body>
+</html>
