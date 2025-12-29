@@ -74,6 +74,15 @@
       </div>
 
       <div class="mt-4 overflow-x-auto">
+        <div class="mt-4 flex gap-2 flex-wrap">
+          <input id="newNameInput"
+                 placeholder="Nuevo nombre"
+                 class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100" />
+          <button id="addNameBtn"
+                  class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg text-sm font-semibold">
+            ➕ Agregar
+          </button>
+        </div>
         <table class="min-w-full text-sm">
           <thead>
             <tr class="text-left text-slate-300 border-b border-slate-800">
@@ -132,6 +141,7 @@
     };
 
     const EVENT_ID = "familia-2025";
+    const ADMIN_PASSCODE = "1234";
 
     // =========================
     //  INIT
@@ -139,7 +149,10 @@
     firebase.initializeApp(firebaseConfig);
     const db = firebase.database();
 
-    const isAdminView = new URLSearchParams(location.search).get("view") === "admin";
+    const params = new URLSearchParams(location.search);
+    const isAdminView =
+      params.get("view") === "admin" &&
+      params.get("pass") === ADMIN_PASSCODE;
 
     const normalView = document.getElementById("normalView");
     const adminView = document.getElementById("adminView");
@@ -164,6 +177,18 @@
       mountAdmin();
     } else {
       mountNormal();
+    }
+    if (params.get("view") === "admin" && !isAdminView) {
+      document.body.innerHTML = `
+        <div class="min-h-screen flex items-center justify-center bg-slate-950 text-slate-100 px-4">
+          <div class="max-w-md text-center bg-slate-900 p-6 rounded-xl border border-slate-800">
+            <h1 class="text-xl font-bold mb-2">⛔ Acceso restringido</h1>
+            <p class="text-slate-300 text-sm">
+              Este panel es solo para el organizador del intercambio.
+            </p>
+          </div>
+        </div>
+      `;
     }
 
     // =========================
@@ -389,6 +414,30 @@
         }
       });
     }
+
+    document.getElementById("addNameBtn")?.addEventListener("click", async () => {
+      const input = document.getElementById("newNameInput");
+      const name = input.value.trim();
+      if (!name) return alert("Escribe un nombre");
+    
+      const snap = await stateRef.once("value");
+      const state = snap.val();
+      if (!state) return alert("Estado inválido");
+    
+      if (
+        state.pendingGivers.includes(name) ||
+        state.availableReceivers.includes(name) ||
+        state.assignments[name]
+      ) {
+        return alert("Ese nombre ya existe");
+      }
+    
+      state.pendingGivers.push(name);
+      state.availableReceivers.push(name);
+    
+      await stateRef.set(state);
+      input.value = "";
+    });
 
     function escapeHtml(str) {
       return String(str)
